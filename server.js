@@ -1,6 +1,6 @@
 const http = require('http');
 
-const API_KEY = process.env.ANTHROPIC_API_KEY;
+const API_KEY = process.env.GROQ_API_KEY;
 
 const CHUNKS = [
   { topic: "X / Twitter acquisition & social media", start: 210, summary: "X has ~600M monthly users, can spike to 1B during major events. Elon bought Twitter because it amplified far-left ideology; his goal is a balanced centrist platform following each country's laws. X aims to be a global town square — not dopamine-optimized content but meaningful exchange of ideas across languages via auto-translation.", keywords: ["twitter","x","social media","users","centrist","acquisition","town square","collective consciousness","translation"] },
@@ -37,31 +37,43 @@ function formatTime(s) {
   return m + ':' + String(s % 60).padStart(2, '0');
 }
 
-async function callClaude(query) {
+async function callGroq(query) {
   const chunks = findChunks(query);
   const context = chunks.map((c, i) =>
     '[Segment ' + (i+1) + ' — starts at ' + formatTime(c.start) + ' — Topic: ' + c.topic + ']\n' + c.summary
   ).join('\n\n');
 
   const bodyData = JSON.stringify({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 1000,
-    system: 'You are a Q&A bot for the podcast People by WTF Ep. 16 featuring Elon Musk interviewed by Nikhil Kamath (Nov 30, 2025). Answer questions using ONLY the provided transcript segments. Be concise (2-4 sentences). At the end output exactly: {"timestamp_seconds": NUMBER, "topic": "TOPIC"}. If not covered, say so honestly.',
-    messages: [{ role: "user", content: 'Transcript segments:\n' + context + '\n\nQuestion: ' + query }]
+    model: "llama3-8b-8192",
+    max_tokens: 500,
+    messages: [
+      {
+        role: "system",
+        content: 'You are a Q&A bot for the podcast People by WTF Ep. 16 featuring Elon Musk interviewed by Nikhil Kamath. Answer using ONLY the provided transcript segments. Be concise (2-4 sentences). At the end of your reply, output exactly this JSON on its own line: {"timestamp_seconds": NUMBER, "topic": "TOPIC"} — use the most relevant segment start time. If the question is not covered, say so honestly.'
+      },
+      {
+        role: "user",
+        content: 'Transcript segments:\n' + context + '\n\nQuestion: ' + query
+      }
+    ]
   });
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-api-key": API_KEY,
-      "anthropic-version": "2023-06-01"
+      "Authorization": "Bearer " + API_KEY
     },
     body: bodyData
   });
 
   const data = await response.json();
-  const raw = data.content.map(b => b.text || '').join('');
+
+  if (!data.choices || !data.choices[0]) {
+    throw new Error('Groq API error: ' + JSON.stringify(data));
+  }
+
+  const raw = data.choices[0].message.content || '';
 
   let answer = raw, ts = chunks[0].start, topic = chunks[0].topic;
   const m = raw.match(/\{[\s\S]*?"timestamp_seconds"[\s\S]*?\}/);
@@ -106,7 +118,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .input-row button{height:42px;padding:0 18px;border-radius:8px;border:none;background:#1a1a1a;color:#fff;font-size:14px;font-weight:500;cursor:pointer;font-family:inherit}
 .input-row button:hover{background:#333}
 .input-row button:disabled{background:#ccc;cursor:not-allowed}
-.answer-card{background:#fff;border:1px solid #e8e8e8;border-radius:12px;padding:16px 18px;margin-bottom:12px}
+.answer-card{background:#fff;border:1px solid #e8e8e8;border-radius:12px;padding:16px 18px;margin-bottom:12px;animation:fadeIn 0.3s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 .answer-card .q{font-size:12px;color:#888;margin-bottom:8px;font-weight:500;text-transform:uppercase;letter-spacing:0.04em}
 .answer-card .q span{color:#4a7cf7}
 .answer-card .a{font-size:14px;color:#222;line-height:1.7;margin-bottom:14px}
@@ -141,7 +154,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <button id="ask-btn">Ask</button>
   </div>
   <div id="answers"></div>
-  <div class="built-tag">Built with Claude Sonnet 4 · Sportomic AI Intern Assignment</div>
+  <div class="built-tag">Built with Llama 3 via Groq · Sportomic AI Intern Assignment</div>
 </div>
 <script>
 const QUESTIONS=["What is first-principles thinking?","Future of work?","How does Starlink work?","Will money exist in the future?","What is the Kardashev scale?","Is Elon worried about AI?","Advice for entrepreneurs?","Does Elon believe in simulation theory?"];
@@ -151,7 +164,7 @@ function card(q,r){
   const url="https://www.youtube.com/watch?v="+VIDEO_ID+"&t="+r.ts+"s";
   const d=document.createElement("div");
   d.className="answer-card";
-  d.innerHTML='<div class="q">Question: <span>'+q+'</span></div><div class="a">'+r.answer+'</div><a class="ts-btn" href="'+url+'" target="_blank">Watch at '+fmt(r.ts)+' — '+r.topic+'</a>';
+  d.innerHTML='<div class="q">Question: <span>'+q+'</span></div><div class="a">'+r.answer+'</div><a class="ts-btn" href="'+url+'" target="_blank">Watch at '+fmt(r.ts)+' \u2014 '+r.topic+'</a>';
   return d;
 }
 const chips=document.getElementById("chips");
@@ -175,6 +188,7 @@ async function doAsk(){
   try{
     const res=await fetch("/ask",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({query:query})});
     const result=await res.json();
+    if(result.error) throw new Error(result.error);
     loader.remove();
     answers.prepend(card(query,result));
     input.value="";
@@ -182,7 +196,7 @@ async function doAsk(){
     loader.remove();
     const err=document.createElement("div");
     err.className="error";
-    err.textContent="Something went wrong. Please try again.";
+    err.textContent="Something went wrong: "+e.message;
     answers.prepend(err);
   }
   btn.disabled=false;
@@ -213,11 +227,12 @@ const server = http.createServer(async (req, res) => {
     req.on('end', async () => {
       try {
         const { query } = JSON.parse(body);
-        if (!query) { res.writeHead(400); res.end(JSON.stringify({ error: 'No query' })); return; }
-        const result = await callClaude(query);
+        if (!query) { res.writeHead(400); res.end(JSON.stringify({ error: 'No query provided' })); return; }
+        const result = await callGroq(query);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
       } catch (e) {
+        console.error('Error:', e.message);
         res.writeHead(500); res.end(JSON.stringify({ error: e.message }));
       }
     });
@@ -228,4 +243,4 @@ const server = http.createServer(async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log('Running on port ' + PORT));
+server.listen(PORT, () => console.log('Server running on port ' + PORT));
